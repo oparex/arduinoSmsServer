@@ -39,6 +39,14 @@ type SMSListResponse struct {
 	Messages []ReceivedSMS `json:"messages"`
 }
 
+// SentSMSListResponse represents the response for listing sent SMS
+type SentSMSListResponse struct {
+	Status   string    `json:"status"`
+	Total    int       `json:"total"`
+	Count    int       `json:"count"`
+	Messages []SentSMS `json:"messages"`
+}
+
 // App holds the application state
 type App struct {
 	db         *Database
@@ -150,6 +158,12 @@ func (app *App) setupRoutes(router *gin.Engine) {
 	// Get received SMS by number
 	router.GET("/received/:number", app.getReceivedSMSByNumber)
 
+	// Get sent SMS
+	router.GET("/sent", app.getSentSMS)
+
+	// Get sent SMS by number
+	router.GET("/sent/:number", app.getSentSMSByNumber)
+
 	// Get statistics
 	router.GET("/stats", app.getStats)
 }
@@ -207,11 +221,19 @@ func (app *App) sendSMS(c *gin.Context) {
 	// Send SMS via serial connection
 	err := app.smsConn.SendSMS(req.Number, req.Content)
 	if err != nil {
+		// Save failed SMS to database
+		app.db.SaveSentSMS(req.Number, req.Content, "error", err.Error())
+
 		c.JSON(http.StatusInternalServerError, SMSResponse{
 			Status:  "error",
 			Message: fmt.Sprintf("Failed to send SMS: %v", err),
 		})
 		return
+	}
+
+	// Save successful SMS to database
+	if saveErr := app.db.SaveSentSMS(req.Number, req.Content, "success", ""); saveErr != nil {
+		log.Printf("Failed to save sent SMS to database: %v", saveErr)
 	}
 
 	// Success response
@@ -307,16 +329,120 @@ func (app *App) getReceivedSMSByNumber(c *gin.Context) {
 	})
 }
 
-// getStats returns statistics about the SMS gateway
-func (app *App) getStats(c *gin.Context) {
-	total, err := app.db.CountReceivedSMS()
+// getSentSMS retrieves sent SMS messages with pagination
+func (app *App) getSentSMS(c *gin.Context) {
+	// Parse query parameters
+	limit := 50
+	offset := 0
+
+	if limitStr := c.Query("limit"); limitStr != "" {
+		if l, err := strconv.Atoi(limitStr); err == nil && l > 0 {
+			limit = l
+			if limit > 100 {
+				limit = 100 // Cap at 100
+			}
+		}
+	}
+
+	if offsetStr := c.Query("offset"); offsetStr != "" {
+		if o, err := strconv.Atoi(offsetStr); err == nil && o >= 0 {
+			offset = o
+		}
+	}
+
+	// Get messages from database
+	messages, err := app.db.GetSentSMS(limit, offset)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, SMSResponse{
+			Status:  "error",
+			Message: fmt.Sprintf("Failed to retrieve messages: %v", err),
+		})
+		return
+	}
+
+	// Get total count
+	total, err := app.db.CountSentSMS()
 	if err != nil {
 		total = 0
 	}
 
+	c.JSON(http.StatusOK, SentSMSListResponse{
+		Status:   "success",
+		Total:    total,
+		Count:    len(messages),
+		Messages: messages,
+	})
+}
+
+// getSentSMSByNumber retrieves sent SMS messages to a specific number
+func (app *App) getSentSMSByNumber(c *gin.Context) {
+	number := c.Param("number")
+
+	// Parse query parameters
+	limit := 50
+	offset := 0
+
+	if limitStr := c.Query("limit"); limitStr != "" {
+		if l, err := strconv.Atoi(limitStr); err == nil && l > 0 {
+			limit = l
+			if limit > 100 {
+				limit = 100
+			}
+		}
+	}
+
+	if offsetStr := c.Query("offset"); offsetStr != "" {
+		if o, err := strconv.Atoi(offsetStr); err == nil && o >= 0 {
+			offset = o
+		}
+	}
+
+	// Get messages from database
+	messages, err := app.db.GetSentSMSByNumber(number, limit, offset)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, SMSResponse{
+			Status:  "error",
+			Message: fmt.Sprintf("Failed to retrieve messages: %v", err),
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, SentSMSListResponse{
+		Status:   "success",
+		Total:    len(messages),
+		Count:    len(messages),
+		Messages: messages,
+	})
+}
+
+// getStats returns statistics about the SMS gateway
+func (app *App) getStats(c *gin.Context) {
+	totalReceived, err := app.db.CountReceivedSMS()
+	if err != nil {
+		totalReceived = 0
+	}
+
+	totalSent, err := app.db.CountSentSMS()
+	if err != nil {
+		totalSent = 0
+	}
+
+	sentSuccess, err := app.db.CountSentSMSByStatus("success")
+	if err != nil {
+		sentSuccess = 0
+	}
+
+	sentError, err := app.db.CountSentSMSByStatus("error")
+	if err != nil {
+		sentError = 0
+	}
+
 	c.JSON(http.StatusOK, gin.H{
 		"status":         "success",
-		"total_received": total,
+		"total_received": totalReceived,
+		"total_sent":     totalSent,
+		"sent_success":   sentSuccess,
+		"sent_error":     sentError,
 		"connected":      app.smsConn.IsConnected(),
 		"mode":           app.deviceMode,
 	})

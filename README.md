@@ -154,6 +154,41 @@ GET /received/:number?limit=50&offset=0
 
 Returns all SMS messages received from a specific phone number.
 
+### Get Sent SMS
+```
+GET /sent?limit=50&offset=0
+```
+
+Query parameters:
+- `limit` (optional): Number of messages to return (default: 50, max: 100)
+- `offset` (optional): Number of messages to skip (default: 0)
+
+Response:
+```json
+{
+  "status": "success",
+  "total": 200,
+  "count": 50,
+  "messages": [
+    {
+      "id": 1,
+      "number": "+1234567890",
+      "content": "Message sent",
+      "status": "success",
+      "error": "",
+      "created_at": "2024-01-17T10:30:00Z"
+    }
+  ]
+}
+```
+
+### Get Sent SMS by Number
+```
+GET /sent/:number?limit=50&offset=0
+```
+
+Returns all SMS messages sent to a specific phone number.
+
 ### Get Statistics
 ```
 GET /stats
@@ -164,6 +199,9 @@ Response:
 {
   "status": "success",
   "total_received": 150,
+  "total_sent": 200,
+  "sent_success": 195,
+  "sent_error": 5,
   "connected": true,
   "mode": "auto"
 }
@@ -202,14 +240,27 @@ fetch('http://localhost:8080/send', {
 ### Retrieve Received SMS
 
 ```bash
-# Get the latest 50 messages
+# Get the latest 50 received messages
 curl http://localhost:8080/received
 
-# Get messages with pagination
+# Get received messages with pagination
 curl http://localhost:8080/received?limit=20&offset=40
 
-# Get messages from a specific number
+# Get received messages from a specific number
 curl http://localhost:8080/received/+1234567890
+```
+
+### Retrieve Sent SMS
+
+```bash
+# Get the latest 50 sent messages
+curl http://localhost:8080/sent
+
+# Get sent messages with pagination
+curl http://localhost:8080/sent?limit=20&offset=40
+
+# Get sent messages to a specific number
+curl http://localhost:8080/sent/+1234567890
 ```
 
 ### Check Health and Connection Status
@@ -269,16 +320,29 @@ The Arduino and Go backend communicate over USB serial (115200 baud) using JSON 
 
 ## Database
 
-The application uses SQLite to store received SMS messages. The database file `sms.db` is created automatically in the working directory.
+The application uses SQLite to store both sent and received SMS messages. The database file `sms.db` is created automatically in the working directory.
 
 ### Schema
 
+**Received SMS:**
 ```sql
 CREATE TABLE received_sms (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     number TEXT NOT NULL,
     content TEXT NOT NULL,
     timestamp DATETIME NOT NULL,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+```
+
+**Sent SMS:**
+```sql
+CREATE TABLE sent_sms (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    number TEXT NOT NULL,
+    content TEXT NOT NULL,
+    status TEXT NOT NULL,  -- 'success' or 'error'
+    error TEXT,            -- Error message if status is 'error'
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 ```
