@@ -124,9 +124,8 @@ func (d *Database) GetReceivedSMS(limit, offset int) ([]ReceivedSMS, error) {
 			return nil, fmt.Errorf("failed to scan row: %w", err)
 		}
 
-		// Parse timestamps
-		msg.Timestamp, _ = time.Parse("2006-01-02 15:04:05", timestampStr)
-		msg.CreatedAt, _ = time.Parse("2006-01-02 15:04:05", createdAtStr)
+		msg.Timestamp = parseTimestamp(timestampStr)
+		msg.CreatedAt = parseTimestamp(createdAtStr)
 
 		messages = append(messages, msg)
 	}
@@ -165,9 +164,8 @@ func (d *Database) GetReceivedSMSByNumber(number string, limit, offset int) ([]R
 			return nil, fmt.Errorf("failed to scan row: %w", err)
 		}
 
-		// Parse timestamps
-		msg.Timestamp, _ = time.Parse("2006-01-02 15:04:05", timestampStr)
-		msg.CreatedAt, _ = time.Parse("2006-01-02 15:04:05", createdAtStr)
+		msg.Timestamp = parseTimestamp(timestampStr)
+		msg.CreatedAt = parseTimestamp(createdAtStr)
 
 		messages = append(messages, msg)
 	}
@@ -224,8 +222,7 @@ func (d *Database) GetSentSMS(limit, offset int) ([]SentSMS, error) {
 			return nil, fmt.Errorf("failed to scan row: %w", err)
 		}
 
-		// Parse timestamp
-		msg.CreatedAt, _ = time.Parse("2006-01-02 15:04:05", createdAtStr)
+		msg.CreatedAt = parseTimestamp(createdAtStr)
 
 		messages = append(messages, msg)
 	}
@@ -264,8 +261,7 @@ func (d *Database) GetSentSMSByNumber(number string, limit, offset int) ([]SentS
 			return nil, fmt.Errorf("failed to scan row: %w", err)
 		}
 
-		// Parse timestamp
-		msg.CreatedAt, _ = time.Parse("2006-01-02 15:04:05", createdAtStr)
+		msg.CreatedAt = parseTimestamp(createdAtStr)
 
 		messages = append(messages, msg)
 	}
@@ -289,6 +285,22 @@ func (d *Database) CountSentSMSByStatus(status string) (int, error) {
 	var count int
 	err := d.db.QueryRow("SELECT COUNT(*) FROM sent_sms WHERE status = ?", status).Scan(&count)
 	return count, err
+}
+
+// parseTimestamp tries multiple formats to parse a SQLite timestamp string
+func parseTimestamp(s string) time.Time {
+	formats := []string{
+		time.RFC3339Nano,
+		time.RFC3339,
+		"2006-01-02T15:04:05",
+		"2006-01-02 15:04:05",
+	}
+	for _, f := range formats {
+		if t, err := time.Parse(f, s); err == nil {
+			return t
+		}
+	}
+	return time.Time{}
 }
 
 // Close closes the database connection

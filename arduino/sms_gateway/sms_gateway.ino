@@ -160,9 +160,9 @@ void checkIncomingSMS() {
     number = String(senderNumber);
 
     // Read message content
-    while (sms.available()) {
-      char c = sms.read();
-      message += c;
+    int c;
+    while ((c = sms.read()) != -1) {
+      message += (char)c;
     }
 
     // Delete the message from SIM

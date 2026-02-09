@@ -1,6 +1,7 @@
 package main
 
 import (
+	"flag"
 	"fmt"
 	"log"
 	"net/http"
@@ -55,6 +56,9 @@ type App struct {
 }
 
 func main() {
+	port := flag.Int("port", 7070, "HTTP server port")
+	flag.Parse()
+
 	// Initialize database
 	db, err := NewDatabase("./sms.db")
 	if err != nil {
@@ -133,13 +137,9 @@ func main() {
 	}()
 
 	// Start server
-	port := os.Getenv("PORT")
-	if port == "" {
-		port = "8080"
-	}
-
-	log.Printf("Starting Arduino SMS Server on port %s", port)
-	if err := router.Run(":" + port); err != nil {
+	addr := fmt.Sprintf(":%d", *port)
+	log.Printf("Starting Arduino SMS Server on port %d", *port)
+	if err := router.Run(addr); err != nil {
 		log.Fatalf("Failed to start server: %v", err)
 	}
 }

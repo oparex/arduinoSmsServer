@@ -1,7 +1,7 @@
 package main
 
 import (
-	"bufio"
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -34,7 +34,6 @@ type SerialResponse struct {
 type ArduinoConnection struct {
 	port       serial.Port
 	portName   string
-	reader     *bufio.Reader
 	mu         sync.Mutex
 	db         *Database
 	connected  bool
@@ -149,7 +148,6 @@ func NewArduinoConnection(portName string, db *Database) (*ArduinoConnection, er
 	conn := &ArduinoConnection{
 		port:      port,
 		portName:  portName,
-		reader:    bufio.NewReader(port),
 		db:        db,
 		connected: true,
 		stopChan:  make(chan bool),
@@ -168,12 +166,15 @@ func NewArduinoConnection(portName string, db *Database) (*ArduinoConnection, er
 
 // readLoop continuously reads from the serial port
 func (a *ArduinoConnection) readLoop() {
+	buf := make([]byte, 256)
+	var lineBuf []byte
+
 	for {
 		select {
 		case <-a.stopChan:
 			return
 		default:
-			line, err := a.reader.ReadString('\n')
+			n, err := a.port.Read(buf)
 			if err != nil {
 				if !strings.Contains(err.Error(), "timeout") {
 					if a.connected {
@@ -182,13 +183,27 @@ func (a *ArduinoConnection) readLoop() {
 				}
 				continue
 			}
-
-			line = strings.TrimSpace(line)
-			if line == "" {
+			if n == 0 {
+				// Timeout with no data — this is normal, just loop
 				continue
 			}
 
-			a.handleResponse(line)
+			lineBuf = append(lineBuf, buf[:n]...)
+
+			// Process complete lines
+			for {
+				idx := bytes.IndexByte(lineBuf, '\n')
+				if idx < 0 {
+					break
+				}
+				line := strings.TrimSpace(string(lineBuf[:idx]))
+				lineBuf = lineBuf[idx+1:]
+
+				if line == "" {
+					continue
+				}
+				a.handleResponse(line)
+			}
 		}
 	}
 }
