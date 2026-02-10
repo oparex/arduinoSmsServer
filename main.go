@@ -351,7 +351,20 @@ func (app *App) searchReceivedSMS(c *gin.Context) {
 		return
 	}
 
-	msg, err := app.db.FindReceivedSMS(q)
+	var after time.Time
+	if afterStr := c.Query("after"); afterStr != "" {
+		parsed, err := time.Parse(time.RFC3339, afterStr)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, SMSResponse{
+				Status:  "error",
+				Message: "Invalid 'after' parameter, expected RFC3339 format (e.g. 2025-01-15T10:30:00Z)",
+			})
+			return
+		}
+		after = parsed
+	}
+
+	msg, err := app.db.FindReceivedSMS(q, after)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, SMSResponse{
 			Status:  "error",
@@ -369,9 +382,10 @@ func (app *App) searchReceivedSMS(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{
-		"status":  "success",
-		"number":  msg.Number,
-		"content": msg.Content,
+		"status":    "success",
+		"number":    msg.Number,
+		"content":   msg.Content,
+		"timestamp": msg.Timestamp,
 	})
 }
 

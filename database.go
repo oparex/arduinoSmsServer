@@ -177,20 +177,36 @@ func (d *Database) GetReceivedSMSByNumber(number string, limit, offset int) ([]R
 	return messages, nil
 }
 
-// FindReceivedSMS searches for the most recent received SMS containing the given string (case-insensitive)
-func (d *Database) FindReceivedSMS(search string) (*ReceivedSMS, error) {
-	query := `
-		SELECT id, number, content, timestamp, created_at
-		FROM received_sms
-		WHERE content LIKE '%' || ? || '%'
-		ORDER BY timestamp DESC
-		LIMIT 1
-	`
+// FindReceivedSMS searches for the most recent received SMS containing the given string (case-insensitive).
+// If after is non-zero, only messages with a timestamp after that time are considered.
+func (d *Database) FindReceivedSMS(search string, after time.Time) (*ReceivedSMS, error) {
+	var query string
+	var args []interface{}
+
+	if after.IsZero() {
+		query = `
+			SELECT id, number, content, timestamp, created_at
+			FROM received_sms
+			WHERE content LIKE '%' || ? || '%'
+			ORDER BY timestamp DESC
+			LIMIT 1
+		`
+		args = []interface{}{search}
+	} else {
+		query = `
+			SELECT id, number, content, timestamp, created_at
+			FROM received_sms
+			WHERE content LIKE '%' || ? || '%' AND timestamp > ?
+			ORDER BY timestamp DESC
+			LIMIT 1
+		`
+		args = []interface{}{search, after.Format(time.RFC3339)}
+	}
 
 	var msg ReceivedSMS
 	var timestampStr, createdAtStr string
 
-	err := d.db.QueryRow(query, search).Scan(&msg.ID, &msg.Number, &msg.Content, &timestampStr, &createdAtStr)
+	err := d.db.QueryRow(query, args...).Scan(&msg.ID, &msg.Number, &msg.Content, &timestampStr, &createdAtStr)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
