@@ -9,6 +9,7 @@ import (
 	"os/signal"
 	"strconv"
 	"syscall"
+	"time"
 
 	"github.com/gin-gonic/gin"
 )
@@ -18,6 +19,9 @@ type SMSConnection interface {
 	SendSMS(number, content string) error
 	Close() error
 	IsConnected() bool
+	IsGSMReady() bool
+	Wakeup() error
+	EnsureGSMReady(timeout time.Duration) error
 }
 
 // SMSRequest represents the incoming SMS request structure
@@ -166,6 +170,9 @@ func (app *App) setupRoutes(router *gin.Engine) {
 
 	// Get statistics
 	router.GET("/stats", app.getStats)
+
+	// GSM wakeup endpoint
+	router.GET("/wakeup", app.wakeupGSM)
 }
 
 // healthCheck returns the health status of the service
@@ -174,6 +181,7 @@ func (app *App) healthCheck(c *gin.Context) {
 		"status":    "healthy",
 		"service":   "Arduino SMS Server",
 		"connected": app.smsConn.IsConnected(),
+		"gsm_ready": app.smsConn.IsGSMReady(),
 		"mode":      app.deviceMode,
 	})
 }
@@ -444,6 +452,24 @@ func (app *App) getStats(c *gin.Context) {
 		"sent_success":   sentSuccess,
 		"sent_error":     sentError,
 		"connected":      app.smsConn.IsConnected(),
+		"gsm_ready":      app.smsConn.IsGSMReady(),
 		"mode":           app.deviceMode,
+	})
+}
+
+// wakeupGSM sends a wakeup command to the Arduino (fire-and-forget)
+func (app *App) wakeupGSM(c *gin.Context) {
+	err := app.smsConn.Wakeup()
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, SMSResponse{
+			Status:  "error",
+			Message: fmt.Sprintf("Failed to send wakeup: %v", err),
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, SMSResponse{
+		Status:  "success",
+		Message: "GSM wakeup initiated",
 	})
 }

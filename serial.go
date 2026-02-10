@@ -28,6 +28,7 @@ type SerialResponse struct {
 	Number  string `json:"number,omitempty"`
 	Content string `json:"content,omitempty"`
 	Time    string `json:"timestamp,omitempty"`
+	GSM     string `json:"gsm,omitempty"`
 }
 
 // ArduinoConnection manages the serial connection to Arduino
@@ -39,6 +40,10 @@ type ArduinoConnection struct {
 	connected  bool
 	stopChan   chan bool
 	onReceived func(number, content string, timestamp time.Time)
+
+	gsmReady   bool
+	gsmMu      sync.RWMutex
+	gsmWaiters []chan bool
 }
 
 // DiscoverArduino attempts to find the Arduino device on available serial ports
@@ -54,11 +59,11 @@ func DiscoverArduino() (string, error) {
 
 	// Common Arduino port patterns
 	arduinoPatterns := []string{
-		"/dev/ttyACM",   // Linux Arduino
-		"/dev/ttyUSB",   // Linux USB-Serial
-		"COM",           // Windows
-		"/dev/cu.usb",   // macOS
-		"/dev/tty.usb",  // macOS
+		"/dev/ttyACM",  // Linux Arduino
+		"/dev/ttyUSB",  // Linux USB-Serial
+		"COM",          // Windows
+		"/dev/cu.usb",  // macOS
+		"/dev/tty.usb", // macOS
 	}
 
 	// Try to find Arduino on common ports
@@ -208,6 +213,90 @@ func (a *ArduinoConnection) readLoop() {
 	}
 }
 
+// updateGSMState updates the GSM ready state and notifies waiters
+func (a *ArduinoConnection) updateGSMState(state string) {
+	a.gsmMu.Lock()
+	defer a.gsmMu.Unlock()
+
+	wasReady := a.gsmReady
+	a.gsmReady = (state == "connected")
+
+	if a.gsmReady && !wasReady {
+		// Notify all waiters
+		for _, ch := range a.gsmWaiters {
+			select {
+			case ch <- true:
+			default:
+			}
+		}
+		a.gsmWaiters = nil
+	}
+
+	log.Printf("GSM state updated: %s (ready=%v)", state, a.gsmReady)
+}
+
+// IsGSMReady returns whether the GSM module is connected
+func (a *ArduinoConnection) IsGSMReady() bool {
+	a.gsmMu.RLock()
+	defer a.gsmMu.RUnlock()
+	return a.gsmReady
+}
+
+// WaitForGSM blocks until GSM is connected or timeout expires
+func (a *ArduinoConnection) WaitForGSM(timeout time.Duration) bool {
+	a.gsmMu.Lock()
+	if a.gsmReady {
+		a.gsmMu.Unlock()
+		return true
+	}
+
+	ch := make(chan bool, 1)
+	a.gsmWaiters = append(a.gsmWaiters, ch)
+	a.gsmMu.Unlock()
+
+	select {
+	case <-ch:
+		return true
+	case <-time.After(timeout):
+		return false
+	}
+}
+
+// Wakeup sends a wakeup command to the Arduino
+func (a *ArduinoConnection) Wakeup() error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	if !a.connected {
+		return fmt.Errorf("not connected to Arduino")
+	}
+
+	_, err := a.port.Write([]byte("{\"cmd\":\"wakeup\"}\n"))
+	if err != nil {
+		return fmt.Errorf("failed to send wakeup command: %w", err)
+	}
+
+	log.Println("Sent wakeup command to Arduino")
+	return nil
+}
+
+// EnsureGSMReady wakes GSM if needed and waits for it to become ready
+func (a *ArduinoConnection) EnsureGSMReady(timeout time.Duration) error {
+	if a.IsGSMReady() {
+		return nil
+	}
+
+	if err := a.Wakeup(); err != nil {
+		return fmt.Errorf("failed to wake GSM: %w", err)
+	}
+
+	if !a.WaitForGSM(timeout) {
+		return fmt.Errorf("GSM did not become ready within %v", timeout)
+	}
+
+	return nil
+}
+
 // handleResponse processes responses from Arduino
 func (a *ArduinoConnection) handleResponse(line string) {
 	var response SerialResponse
@@ -218,8 +307,17 @@ func (a *ArduinoConnection) handleResponse(line string) {
 		return
 	}
 
+	// Update GSM state from every response
+	if response.GSM != "" {
+		a.updateGSMState(response.GSM)
+	}
+
 	// Handle different response types
 	switch {
+	case response.Event == "gsm_state":
+		// Already handled above via GSM field
+		log.Printf("GSM state event: %s", response.GSM)
+
 	case response.Event == "received":
 		// Received SMS from Arduino
 		log.Printf("Received SMS from %s: %s", response.Number, response.Content)
@@ -265,6 +363,11 @@ func (a *ArduinoConnection) handleReceivedSMS(response SerialResponse) {
 
 // SendSMS sends an SMS via the Arduino
 func (a *ArduinoConnection) SendSMS(number, content string) error {
+	// Ensure GSM is ready before sending
+	if err := a.EnsureGSMReady(30 * time.Second); err != nil {
+		return fmt.Errorf("GSM not ready: %w", err)
+	}
+
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
@@ -371,6 +474,22 @@ func (m *MockSerialConnection) Close() error {
 // IsConnected always returns true for mock
 func (m *MockSerialConnection) IsConnected() bool {
 	return true
+}
+
+// IsGSMReady always returns true for mock
+func (m *MockSerialConnection) IsGSMReady() bool {
+	return true
+}
+
+// Wakeup is a no-op for mock
+func (m *MockSerialConnection) Wakeup() error {
+	log.Println("[MOCK] Wakeup command (no-op)")
+	return nil
+}
+
+// EnsureGSMReady is a no-op for mock
+func (m *MockSerialConnection) EnsureGSMReady(timeout time.Duration) error {
+	return nil
 }
 
 // GetDeviceMode returns the device connection mode from environment variable

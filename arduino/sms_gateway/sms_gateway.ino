@@ -9,6 +9,11 @@
   - Send SMS: {"cmd":"send","number":"+1234567890","content":"message"}
   - Response: {"status":"ok","message":"SMS sent"} or {"status":"error","message":"error details"}
   - Incoming SMS: {"event":"received","number":"+1234567890","content":"message","timestamp":"YYYY-MM-DD HH:MM:SS"}
+
+  Power management:
+  - GSM connects on boot, then auto-disconnects after 60 seconds of inactivity
+  - "wakeup" command reconnects GSM; "send" auto-connects if disconnected
+  - Every response includes "gsm" field ("connected" or "disconnected")
 */
 
 #include <MKRGSM.h>
@@ -31,6 +36,10 @@ const unsigned long SMS_CHECK_INTERVAL = 5000; // Check every 5 seconds
 // Connection state
 bool gsmConnected = false;
 
+// Inactivity timer
+unsigned long lastActivityTime = 0;
+const unsigned long INACTIVITY_TIMEOUT = 60000; // 60 seconds
+
 void setup() {
   // Initialize serial communications
   Serial.begin(115200);
@@ -38,23 +47,16 @@ void setup() {
     ; // Wait for serial port to connect
   }
 
-  Serial.println("{\"status\":\"info\",\"message\":\"Arduino SMS Gateway starting...\"}");
+  sendInfo("Arduino SMS Gateway starting...");
 
   // Initialize GSM connection
   connectGSM();
 
-  Serial.println("{\"status\":\"ready\",\"message\":\"SMS Gateway ready\"}");
+  sendReady("SMS Gateway ready");
 }
 
 void loop() {
-  // Check GSM connection
-  if (!gsmConnected) {
-    connectGSM();
-    delay(10000); // Wait before retrying
-    return;
-  }
-
-  // Read incoming serial data
+  // Always read serial commands (even when GSM disconnected, so wakeup works)
   while (Serial.available() > 0) {
     char c = Serial.read();
 
@@ -71,26 +73,49 @@ void loop() {
     }
   }
 
-  // Check for incoming SMS periodically
-  if (millis() - lastSMSCheck > SMS_CHECK_INTERVAL) {
-    checkIncomingSMS();
-    lastSMSCheck = millis();
+  // Only check incoming SMS when GSM connected
+  if (gsmConnected) {
+    if (millis() - lastSMSCheck > SMS_CHECK_INTERVAL) {
+      checkIncomingSMS();
+      lastSMSCheck = millis();
+    }
+
+    // Check inactivity timeout
+    if (millis() - lastActivityTime > INACTIVITY_TIMEOUT) {
+      disconnectGSM();
+    }
   }
 
   delay(100);
 }
 
-void connectGSM() {
-  Serial.println("{\"status\":\"info\",\"message\":\"Connecting to GSM network...\"}");
+bool connectGSM() {
+  sendInfo("Connecting to GSM network...");
 
   // Start GSM connection
   if (gsmAccess.begin(PIN_NUMBER) == GSM_READY) {
     gsmConnected = true;
-    Serial.println("{\"status\":\"info\",\"message\":\"Connected to GSM network\"}");
+    resetActivityTimer();
+    sendGSMState();
+    sendInfo("Connected to GSM network");
+    return true;
   } else {
     gsmConnected = false;
-    Serial.println("{\"status\":\"error\",\"message\":\"Failed to connect to GSM network\"}");
+    sendGSMState();
+    sendError("Failed to connect to GSM network");
+    return false;
   }
+}
+
+void disconnectGSM() {
+  gsmAccess.shutdown();
+  gsmConnected = false;
+  sendGSMState();
+  sendInfo("GSM disconnected due to inactivity");
+}
+
+void resetActivityTimer() {
+  lastActivityTime = millis();
 }
 
 void processCommand(String command) {
@@ -108,11 +133,21 @@ void processCommand(String command) {
     return;
   }
 
-  // Check if it's a send command
+  // Check command type
   if (command.indexOf("\"send\"") != -1) {
     handleSendSMS(command);
   } else if (command.indexOf("\"ping\"") != -1) {
+    resetActivityTimer();
     sendResponse("ok", "pong");
+  } else if (command.indexOf("\"wakeup\"") != -1) {
+    if (!gsmConnected) {
+      connectGSM();
+    } else {
+      resetActivityTimer();
+    }
+    sendResponse("ok", "wakeup acknowledged");
+  } else if (command.indexOf("\"status\"") != -1) {
+    sendResponse("ok", gsmConnected ? "gsm connected" : "gsm disconnected");
   } else {
     sendError("Unknown command");
   }
@@ -133,6 +168,16 @@ void handleSendSMS(String command) {
     return;
   }
 
+  // Auto-connect GSM if disconnected
+  if (!gsmConnected) {
+    if (!connectGSM()) {
+      sendError("Failed to connect GSM for sending");
+      return;
+    }
+  }
+
+  resetActivityTimer();
+
   // Send SMS
   sms.beginSMS(number.c_str());
   sms.print(content);
@@ -151,6 +196,8 @@ void checkIncomingSMS() {
 
   // Check if there are any SMS available
   if (sms.available()) {
+    resetActivityTimer();
+
     String number = "";
     String message = "";
 
@@ -183,6 +230,14 @@ void sendReceivedSMS(String number, String content) {
   Serial.print(escapeJSON(content));
   Serial.print("\",\"timestamp\":\"");
   Serial.print(timestamp);
+  Serial.print("\",\"gsm\":\"");
+  Serial.print(gsmConnected ? "connected" : "disconnected");
+  Serial.println("\"}");
+}
+
+void sendGSMState() {
+  Serial.print("{\"event\":\"gsm_state\",\"gsm\":\"");
+  Serial.print(gsmConnected ? "connected" : "disconnected");
   Serial.println("\"}");
 }
 
@@ -191,11 +246,29 @@ void sendResponse(String status, String message) {
   Serial.print(status);
   Serial.print("\",\"message\":\"");
   Serial.print(escapeJSON(message));
+  Serial.print("\",\"gsm\":\"");
+  Serial.print(gsmConnected ? "connected" : "disconnected");
   Serial.println("\"}");
 }
 
 void sendError(String message) {
   sendResponse("error", message);
+}
+
+void sendInfo(String message) {
+  Serial.print("{\"status\":\"info\",\"message\":\"");
+  Serial.print(escapeJSON(message));
+  Serial.print("\",\"gsm\":\"");
+  Serial.print(gsmConnected ? "connected" : "disconnected");
+  Serial.println("\"}");
+}
+
+void sendReady(String message) {
+  Serial.print("{\"status\":\"ready\",\"message\":\"");
+  Serial.print(escapeJSON(message));
+  Serial.print("\",\"gsm\":\"");
+  Serial.print(gsmConnected ? "connected" : "disconnected");
+  Serial.println("\"}");
 }
 
 String extractJSONValue(String json, String key) {
