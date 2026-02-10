@@ -164,6 +164,9 @@ func NewArduinoConnection(portName string, db *Database) (*ArduinoConnection, er
 	// Start reading incoming messages
 	go conn.readLoop()
 
+	// Start periodic wakeup to check for received SMS
+	go conn.periodicWakeup()
+
 	log.Printf("Connected to Arduino on %s", portName)
 
 	return conn, nil
@@ -213,6 +216,26 @@ func (a *ArduinoConnection) readLoop() {
 	}
 }
 
+// periodicWakeup wakes GSM once per hour to check for received SMS
+func (a *ArduinoConnection) periodicWakeup() {
+	ticker := time.NewTicker(1 * time.Hour)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-a.stopChan:
+			return
+		case <-ticker.C:
+			if !a.IsGSMReady() {
+				log.Println("Periodic wakeup: connecting GSM to check for received SMS")
+				if err := a.Wakeup(); err != nil {
+					log.Printf("Periodic wakeup failed: %v", err)
+				}
+			}
+		}
+	}
+}
+
 // updateGSMState updates the GSM ready state and notifies waiters
 func (a *ArduinoConnection) updateGSMState(state string) {
 	a.gsmMu.Lock()
@@ -221,7 +244,13 @@ func (a *ArduinoConnection) updateGSMState(state string) {
 	wasReady := a.gsmReady
 	a.gsmReady = (state == "connected")
 
-	if a.gsmReady && !wasReady {
+	if a.gsmReady == wasReady {
+		return
+	}
+
+	log.Printf("GSM state changed: %s", state)
+
+	if a.gsmReady {
 		// Notify all waiters
 		for _, ch := range a.gsmWaiters {
 			select {
@@ -231,8 +260,6 @@ func (a *ArduinoConnection) updateGSMState(state string) {
 		}
 		a.gsmWaiters = nil
 	}
-
-	log.Printf("GSM state updated: %s (ready=%v)", state, a.gsmReady)
 }
 
 // IsGSMReady returns whether the GSM module is connected
