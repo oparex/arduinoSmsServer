@@ -159,6 +159,9 @@ func (app *App) setupRoutes(router *gin.Engine) {
 	// Get received SMS
 	router.GET("/received", app.getReceivedSMS)
 
+	// Search received SMS by content
+	router.GET("/received/search", app.searchReceivedSMS)
+
 	// Get received SMS by number
 	router.GET("/received/:number", app.getReceivedSMSByNumber)
 
@@ -334,6 +337,41 @@ func (app *App) getReceivedSMSByNumber(c *gin.Context) {
 		Total:    len(messages),
 		Count:    len(messages),
 		Messages: messages,
+	})
+}
+
+// searchReceivedSMS finds the most recent received SMS containing the search string
+func (app *App) searchReceivedSMS(c *gin.Context) {
+	q := c.Query("q")
+	if q == "" {
+		c.JSON(http.StatusBadRequest, SMSResponse{
+			Status:  "error",
+			Message: "Missing required query parameter: q",
+		})
+		return
+	}
+
+	msg, err := app.db.FindReceivedSMS(q)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, SMSResponse{
+			Status:  "error",
+			Message: fmt.Sprintf("Failed to search messages: %v", err),
+		})
+		return
+	}
+
+	if msg == nil {
+		c.JSON(http.StatusNotFound, SMSResponse{
+			Status:  "error",
+			Message: fmt.Sprintf("No received SMS containing %q", q),
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"status":  "success",
+		"number":  msg.Number,
+		"content": msg.Content,
 	})
 }
 
