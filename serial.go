@@ -149,7 +149,10 @@ func NewArduinoConnection(portName string, db *Database) (*ArduinoConnection, er
 	return NewArduinoConnectionWithMode(portName, db, deviceModeAuto)
 }
 
-// NewArduinoConnectionWithMode creates a new connection to Arduino with device mode for reconnection
+// NewArduinoConnectionWithMode creates a new connection to Arduino with device mode for reconnection.
+// The deviceMode parameter determines reconnection behavior:
+// - deviceModeAuto or "" : Auto-discover Arduino on any USB port during reconnection
+// - specific path (e.g., "/dev/ttyACM0") : Retry reconnection to the same specific port
 func NewArduinoConnectionWithMode(portName string, db *Database, deviceMode string) (*ArduinoConnection, error) {
 	mode := &serial.Mode{
 		BaudRate: 115200,
