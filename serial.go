@@ -13,6 +13,14 @@ import (
 	"go.bug.st/serial"
 )
 
+const (
+	// Reconnection configuration
+	reconnectInterval     = 5 * time.Second
+	portClosedRetryDelay  = 1 * time.Second
+	deviceModeAuto        = "auto"
+	deviceModeMock        = "mock"
+)
+
 // SerialCommand represents a command to send to Arduino
 type SerialCommand struct {
 	Cmd     string `json:"cmd"`
@@ -39,11 +47,17 @@ type ArduinoConnection struct {
 	db         *Database
 	connected  bool
 	stopChan   chan bool
+	stopOnce   sync.Once
 	onReceived func(number, content string, timestamp time.Time)
 
 	gsmReady   bool
 	gsmMu      sync.RWMutex
 	gsmWaiters []chan bool
+
+	deviceMode      string
+	reconnecting    bool
+	reconnectMu     sync.Mutex
+	shouldReconnect bool
 }
 
 // DiscoverArduino attempts to find the Arduino device on available serial ports
@@ -131,6 +145,15 @@ func testSerialPort(portName string) bool {
 
 // NewArduinoConnection creates a new connection to Arduino
 func NewArduinoConnection(portName string, db *Database) (*ArduinoConnection, error) {
+	// Use auto mode as default for backward compatibility
+	return NewArduinoConnectionWithMode(portName, db, deviceModeAuto)
+}
+
+// NewArduinoConnectionWithMode creates a new connection to Arduino with device mode for reconnection.
+// The deviceMode parameter determines reconnection behavior:
+// - deviceModeAuto or "" : Auto-discover Arduino on any USB port during reconnection
+// - specific path (e.g., "/dev/ttyACM0") : Retry reconnection to the same specific port
+func NewArduinoConnectionWithMode(portName string, db *Database, deviceMode string) (*ArduinoConnection, error) {
 	mode := &serial.Mode{
 		BaudRate: 115200,
 		DataBits: 8,
@@ -151,11 +174,13 @@ func NewArduinoConnection(portName string, db *Database) (*ArduinoConnection, er
 	}
 
 	conn := &ArduinoConnection{
-		port:      port,
-		portName:  portName,
-		db:        db,
-		connected: true,
-		stopChan:  make(chan bool),
+		port:            port,
+		portName:        portName,
+		db:              db,
+		connected:       true,
+		stopChan:        make(chan bool),
+		deviceMode:      deviceMode,
+		shouldReconnect: true,
 	}
 
 	// Wait for Arduino to initialize
@@ -185,7 +210,15 @@ func (a *ArduinoConnection) readLoop() {
 			n, err := a.port.Read(buf)
 			if err != nil {
 				if !strings.Contains(err.Error(), "timeout") {
-					if a.connected {
+					// Check if this is a port closed or device disconnected error
+					if isPortClosedError(err) {
+						if a.connected {
+							log.Printf("Arduino disconnected: %v", err)
+							a.handleDisconnection()
+						}
+						// Wait before checking again to avoid tight loop
+						time.Sleep(portClosedRetryDelay)
+					} else if a.connected {
 						log.Printf("Error reading from serial: %v", err)
 					}
 				}
@@ -214,6 +247,145 @@ func (a *ArduinoConnection) readLoop() {
 			}
 		}
 	}
+}
+
+// isPortClosedError checks if the error indicates the port is closed or device disconnected
+func isPortClosedError(err error) bool {
+	errStr := strings.ToLower(err.Error())
+	return strings.Contains(errStr, "port has been closed") ||
+		strings.Contains(errStr, "file already closed") ||
+		strings.Contains(errStr, "device not configured") ||
+		strings.Contains(errStr, "no such device") ||
+		strings.Contains(errStr, "operation not permitted") ||
+		strings.Contains(errStr, "i/o error") ||
+		strings.Contains(errStr, "bad file descriptor")
+}
+
+// handleDisconnection handles when the Arduino is disconnected
+func (a *ArduinoConnection) handleDisconnection() {
+	a.mu.Lock()
+	if !a.connected {
+		a.mu.Unlock()
+		return
+	}
+	a.connected = false
+	a.mu.Unlock()
+
+	// Update GSM state
+	a.gsmMu.Lock()
+	a.gsmReady = false
+	a.gsmMu.Unlock()
+
+	log.Println("Arduino connection lost, attempting to reconnect...")
+
+	// Try to reconnect in the background
+	if a.shouldReconnect {
+		go a.attemptReconnection()
+	}
+}
+
+// attemptReconnection tries to reconnect to Arduino
+func (a *ArduinoConnection) attemptReconnection() {
+	a.reconnectMu.Lock()
+	if a.reconnecting {
+		a.reconnectMu.Unlock()
+		return
+	}
+	a.reconnecting = true
+	a.reconnectMu.Unlock()
+
+	defer func() {
+		a.reconnectMu.Lock()
+		a.reconnecting = false
+		a.reconnectMu.Unlock()
+	}()
+
+	retryCount := 0
+
+	for {
+		if !a.shouldReconnect {
+			log.Println("Reconnection disabled")
+			return
+		}
+
+		// Check if we should stop - use select with default to avoid blocking
+		select {
+		case <-a.stopChan:
+			log.Println("Reconnection cancelled - stop signal received")
+			return
+		default:
+			// Continue with reconnection attempt
+		}
+
+		retryCount++
+		log.Printf("Reconnection attempt #%d...", retryCount)
+
+		var portName string
+		var err error
+
+		// Determine which port to try
+		if a.deviceMode == deviceModeAuto || a.deviceMode == "" {
+			// Auto-discovery mode: try to find Arduino
+			portName, err = DiscoverArduino()
+			if err != nil {
+				log.Printf("Arduino discovery failed: %v", err)
+				time.Sleep(reconnectInterval)
+				continue
+			}
+		} else {
+			// Specific port mode: try the same port
+			portName = a.portName
+		}
+
+		// Try to reconnect
+		if err := a.reconnect(portName); err != nil {
+			log.Printf("Failed to reconnect to %s: %v", portName, err)
+			time.Sleep(reconnectInterval)
+			continue
+		}
+
+		log.Printf("Successfully reconnected to Arduino on %s", portName)
+		return
+	}
+}
+
+// reconnect attempts to reconnect to the specified port
+func (a *ArduinoConnection) reconnect(portName string) error {
+	mode := &serial.Mode{
+		BaudRate: 115200,
+		DataBits: 8,
+		Parity:   serial.NoParity,
+		StopBits: serial.OneStopBit,
+	}
+
+	port, err := serial.Open(portName, mode)
+	if err != nil {
+		return fmt.Errorf("failed to open serial port %s: %w", portName, err)
+	}
+
+	// Set read timeout
+	err = port.SetReadTimeout(100 * time.Millisecond)
+	if err != nil {
+		port.Close()
+		return fmt.Errorf("failed to set read timeout: %w", err)
+	}
+
+	// Close old port if it exists
+	a.mu.Lock()
+	if a.port != nil {
+		a.port.Close()
+	}
+	a.port = port
+	a.portName = portName
+	a.connected = true
+	a.mu.Unlock()
+
+	// Wait for Arduino to initialize
+	time.Sleep(2 * time.Second)
+
+	log.Printf("Reconnected to Arduino on %s", portName)
+
+	return nil
 }
 
 // periodicWakeup wakes GSM once per hour to check for received SMS
@@ -459,8 +631,13 @@ func (a *ArduinoConnection) Close() error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
+	a.shouldReconnect = false
 	a.connected = false
-	close(a.stopChan)
+	
+	// Use sync.Once to ensure stopChan is closed only once
+	a.stopOnce.Do(func() {
+		close(a.stopChan)
+	})
 
 	if a.port != nil {
 		return a.port.Close()
