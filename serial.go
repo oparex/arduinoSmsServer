@@ -47,6 +47,7 @@ type ArduinoConnection struct {
 	db         *Database
 	connected  bool
 	stopChan   chan bool
+	stopOnce   sync.Once
 	onReceived func(number, content string, timestamp time.Time)
 
 	gsmReady   bool
@@ -144,7 +145,8 @@ func testSerialPort(portName string) bool {
 
 // NewArduinoConnection creates a new connection to Arduino
 func NewArduinoConnection(portName string, db *Database) (*ArduinoConnection, error) {
-	return NewArduinoConnectionWithMode(portName, db, "")
+	// Use auto mode as default for backward compatibility
+	return NewArduinoConnectionWithMode(portName, db, deviceModeAuto)
 }
 
 // NewArduinoConnectionWithMode creates a new connection to Arduino with device mode for reconnection
@@ -628,7 +630,11 @@ func (a *ArduinoConnection) Close() error {
 
 	a.shouldReconnect = false
 	a.connected = false
-	close(a.stopChan)
+	
+	// Use sync.Once to ensure stopChan is closed only once
+	a.stopOnce.Do(func() {
+		close(a.stopChan)
+	})
 
 	if a.port != nil {
 		return a.port.Close()
