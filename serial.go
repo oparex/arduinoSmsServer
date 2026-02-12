@@ -13,6 +13,14 @@ import (
 	"go.bug.st/serial"
 )
 
+const (
+	// Reconnection configuration
+	reconnectInterval     = 5 * time.Second
+	portClosedRetryDelay  = 1 * time.Second
+	deviceModeAuto        = "auto"
+	deviceModeMock        = "mock"
+)
+
 // SerialCommand represents a command to send to Arduino
 type SerialCommand struct {
 	Cmd     string `json:"cmd"`
@@ -204,7 +212,7 @@ func (a *ArduinoConnection) readLoop() {
 							a.handleDisconnection()
 						}
 						// Wait before checking again to avoid tight loop
-						time.Sleep(1 * time.Second)
+						time.Sleep(portClosedRetryDelay)
 					} else if a.connected {
 						log.Printf("Error reading from serial: %v", err)
 					}
@@ -288,40 +296,35 @@ func (a *ArduinoConnection) attemptReconnection() {
 	}()
 
 	retryCount := 0
-	maxRetries := -1 // Infinite retries
 
 	for {
-		// Check if we should stop
-		select {
-		case <-a.stopChan:
-			log.Println("Reconnection cancelled - stop signal received")
-			return
-		default:
-		}
-
 		if !a.shouldReconnect {
 			log.Println("Reconnection disabled")
 			return
 		}
 
-		retryCount++
-		if maxRetries > 0 && retryCount > maxRetries {
-			log.Printf("Max reconnection attempts (%d) reached", maxRetries)
+		// Check if we should stop - use select with default to avoid blocking
+		select {
+		case <-a.stopChan:
+			log.Println("Reconnection cancelled - stop signal received")
 			return
+		default:
+			// Continue with reconnection attempt
 		}
 
+		retryCount++
 		log.Printf("Reconnection attempt #%d...", retryCount)
 
 		var portName string
 		var err error
 
 		// Determine which port to try
-		if a.deviceMode == "auto" || a.deviceMode == "" {
+		if a.deviceMode == deviceModeAuto || a.deviceMode == "" {
 			// Auto-discovery mode: try to find Arduino
 			portName, err = DiscoverArduino()
 			if err != nil {
 				log.Printf("Arduino discovery failed: %v", err)
-				time.Sleep(5 * time.Second)
+				time.Sleep(reconnectInterval)
 				continue
 			}
 		} else {
@@ -332,7 +335,7 @@ func (a *ArduinoConnection) attemptReconnection() {
 		// Try to reconnect
 		if err := a.reconnect(portName); err != nil {
 			log.Printf("Failed to reconnect to %s: %v", portName, err)
-			time.Sleep(5 * time.Second)
+			time.Sleep(reconnectInterval)
 			continue
 		}
 
