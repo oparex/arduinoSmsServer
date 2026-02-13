@@ -176,6 +176,7 @@ func NewArduinoConnection(portName string, db *Database) (*ArduinoConnection, er
 func (a *ArduinoConnection) readLoop() {
 	buf := make([]byte, 256)
 	var lineBuf []byte
+	var jsonBuf string
 
 	for {
 		select {
@@ -210,7 +211,28 @@ func (a *ArduinoConnection) readLoop() {
 				if line == "" {
 					continue
 				}
-				a.handleResponse(line)
+
+				// If we're accumulating a multi-line JSON message,
+				// append this line (escaping the newline within the JSON string).
+				if jsonBuf != "" {
+					jsonBuf += "\\n" + line
+				} else if strings.HasPrefix(line, "{") && !json.Valid([]byte(line)) {
+					// Starts with '{' but isn't valid JSON yet — start accumulating
+					jsonBuf = line
+				} else {
+					a.handleResponse(line)
+					continue
+				}
+
+				// Check if the accumulated buffer is now valid JSON
+				if json.Valid([]byte(jsonBuf)) {
+					a.handleResponse(jsonBuf)
+					jsonBuf = ""
+				} else if len(jsonBuf) > 4096 {
+					// Safety limit: discard if buffer grows too large
+					log.Printf("Discarding oversized JSON buffer (%d bytes)", len(jsonBuf))
+					jsonBuf = ""
+				}
 			}
 		}
 	}
