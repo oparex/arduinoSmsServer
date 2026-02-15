@@ -200,7 +200,7 @@ func (d *Database) FindReceivedSMS(search string, after time.Time) (*ReceivedSMS
 			ORDER BY timestamp DESC
 			LIMIT 1
 		`
-		args = []interface{}{search, after.Format(time.RFC3339)}
+		args = []interface{}{search, after.UTC().Format("2006-01-02 15:04:05")}
 	}
 
 	var msg ReceivedSMS

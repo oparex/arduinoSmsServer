@@ -391,8 +391,8 @@ func (a *ArduinoConnection) handleResponse(line string) {
 
 // handleReceivedSMS processes a received SMS and stores it in the database
 func (a *ArduinoConnection) handleReceivedSMS(response SerialResponse) {
-	// Parse timestamp or use current time
-	timestamp := time.Now()
+	// Parse timestamp or use current time (UTC for consistent DB storage)
+	timestamp := time.Now().UTC()
 
 	// Store in database
 	if a.db != nil {
