@@ -101,7 +101,7 @@ func main() {
 		}
 
 		if portName != "" {
-			arduinoConn, err := NewArduinoConnection(portName, db)
+			arduinoConn, err := NewArduinoConnectionWithMode(portName, db, deviceMode)
 			if err != nil {
 				log.Printf("Failed to connect to Arduino on %s: %v", portName, err)
 				log.Println("Falling back to mock mode")
